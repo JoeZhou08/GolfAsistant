@@ -166,7 +166,7 @@ if u_file and p_file:
                 if not os.path.exists(u_p): u_p = u_p_raw
                 if not os.path.exists(p_p): p_p = p_p_raw
 
-                st.write("正在提取 AI 骨骼特征点...")
+                st.write("正在分析...")
                 u_data, u_idx, u_win, u_fps = get_action_data(u_p)
                 p_data, p_idx, p_win, p_fps = get_action_data(p_p)
 
@@ -227,3 +227,4 @@ if u_file and p_file:
             st.code(traceback.format_exc())
 else:
     st.info("💎 请在左侧上传学员和 Pro 的视频，系统将自动对齐并分析。")
+

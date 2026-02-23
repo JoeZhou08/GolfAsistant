@@ -9,7 +9,7 @@ from PIL import Image
 import traceback
 
 # --- 1. 曜石黑金 UI 架构 ---
-st.set_page_config(page_title="GolfPro | Black Gold", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="GolfAsistant | Black Gold", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
@@ -150,7 +150,7 @@ def get_pose_frame(video_path, frame_idx):
 # --- 3. 尊享版页面结构 ---
 
 with st.sidebar:
-    st.title("🏆 GolfPro")
+    st.title("🏆 GolfAsistant")
     st.markdown("尊享级 AI 深度分析对比系统")
     st.markdown("---")
     
@@ -228,4 +228,5 @@ if u_file and p_file:
             st.error(f"分析引擎中断: {e}")
             st.code(traceback.format_exc())
 else:
+
     st.info("💎 请在左侧侧边栏上传素材。系统将自动启动尊享级 AI 深度分析流程。")

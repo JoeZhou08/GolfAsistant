@@ -82,31 +82,76 @@ if not os.path.exists(TEMP_DIR):
 # --- 2. AI 深度分析核心引擎 ---
 
 def get_action_data(video_path):
-    """AI 深度分析：运动特征提取"""
-    mp_pose = mp.solutions.pose
+    """
+    AI 深度分析核心：提取手腕轨迹并处理云端异常
+    """
+    # 强制明确导入子模块，防止云端 AttributeError
+    import mediapipe as mp
+    from mediapipe.python.solutions import pose as mp_pose
+    
     y_coords = []
     cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    with mp_pose.Pose(min_detection_confidence=0.5) as pose:
+    # 初始化 MediaPipe 姿态识别
+    with mp_pose.Pose(
+        static_image_mode=False, 
+        min_detection_confidence=0.5, 
+        model_complexity=1 # 1 为平衡性能与精度，适合云端
+    ) as pose:
         while cap.isOpened():
             ret, frame = cap.read()
-            if not ret: break
-            res = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            y_coords.append(res.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_WRIST].y if res.pose_landmarks else np.nan)
+            if not ret:
+                break
+            
+            # 转换颜色空间：OpenCV(BGR) -> MediaPipe(RGB)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(rgb_frame)
+            
+            # 提取右手腕 (Landmark 16) 的垂直坐标
+            if results.pose_landmarks:
+                y = results.pose_landmarks.landmark[16].y
+                y_coords.append(y)
+            else:
+                # 如果当前帧没抓到人，填入 NaN，后续通过插值补全
+                y_coords.append(np.nan)
+    
     cap.release()
-    
+
+    # --- 数据鲁棒性处理 (解决本地与云端差异的关键) ---
     arr = np.array(y_coords)
-    mask = np.isnan(arr)
-    if np.any(mask) and not np.all(mask):
-        arr[mask] = np.interp(np.flatnonzero(mask), np.flatnonzero(~mask), arr[~mask])
     
+    # 1. 检查是否完全没抓到数据
+    if len(arr) == 0 or np.all(np.isnan(arr)):
+        # 返回保底数据，防止程序崩溃
+        return np.zeros(100), [0, 20, 40, 60, 80, 99], (0, 99), fps
+
+    # 2. 插值法补全缺失帧 (NaN)
+    mask = np.isnan(arr)
+    if np.any(mask):
+        # 只要不是全空，就用前后帧的数据把断点连起来
+        arr[mask] = np.interp(np.flatnonzero(mask), np.flatnonzero(~mask), arr[~mask])
+
+    # 3. 确保数组长度足以计算梯度 (解决 ValueError)
+    if len(arr) < 3:
+        # 如果视频极短，强行拉长到 10 帧避免报错
+        arr = np.repeat(arr, 10) if len(arr) > 0 else np.zeros(10)
+
+    # 计算物理梯度以寻找动作起止点
     dy = np.abs(np.gradient(arr))
+    
+    # 寻找挥杆活跃区间
     moving_indices = np.where(dy > (np.max(dy) * 0.1))[0]
-    start_f = moving_indices[0] if len(moving_indices) > 0 else 0
-    end_f = moving_indices[-1] if len(moving_indices) > 0 else total_frames - 1
-    return arr, np.linspace(start_f, end_f, 6).astype(int), (start_f, end_f), fps
+    if len(moving_indices) > 0:
+        start_f, end_f = moving_indices[0], moving_indices[-1]
+    else:
+        start_f, end_f = 0, len(arr) - 1
+
+    # 生成 6 个关键对齐阶段的索引
+    key_indices = np.linspace(start_f, end_f, 6).astype(int)
+    
+    return arr, key_indices, (start_f, end_f), fps
 
 def render_premium_video(video_path, y_data, swing_window, fps):
     """AI 深度分析：流媒体影像合成"""
@@ -230,3 +275,4 @@ if u_file and p_file:
 else:
 
     st.info("💎 请在左侧侧边栏上传素材。系统将自动启动尊享级 AI 深度分析流程。")
+

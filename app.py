@@ -7,6 +7,7 @@ import mediapipe as mp
 from io import BytesIO
 from PIL import Image
 import traceback
+import time
 
 # --- 1. 曜石黑金 UI 架构 ---
 st.set_page_config(page_title="GolfAsistant | Black Gold", layout="wide", initial_sidebar_state="expanded")
@@ -44,6 +45,7 @@ def get_action_data(video_path):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     
+    # 增加 model_complexity 以提升 Pro 视频识别率
     with mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, model_complexity=1) as pose:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -51,6 +53,7 @@ def get_action_data(video_path):
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = pose.process(rgb_frame)
             if results.pose_landmarks:
+                # 抓取右手腕坐标
                 y_coords.append(results.pose_landmarks.landmark[16].y)
             else:
                 y_coords.append(np.nan)
@@ -60,6 +63,7 @@ def get_action_data(video_path):
     if len(arr) == 0 or np.all(np.isnan(arr)):
         return np.zeros(100), [0, 20, 40, 60, 80, 99], (0, 99), fps
 
+    # 插值处理 NaN，防止曲线断裂
     mask = np.isnan(arr)
     if np.any(mask):
         arr[mask] = np.interp(np.flatnonzero(mask), np.flatnonzero(~mask), arr[~mask])
@@ -76,8 +80,12 @@ def get_action_data(video_path):
 def render_premium_video(video_path, y_data, swing_window, fps):
     cap = cv2.VideoCapture(video_path)
     w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    raw_out = os.path.join(TEMP_DIR, "raw_tmp.mp4")
-    final_out = os.path.join(TEMP_DIR, "video_final.mp4")
+    
+    # 使用唯一文件名，防止多用户冲突导致文件被占用
+    ts = int(time.time())
+    raw_out = os.path.join(TEMP_DIR, f"raw_{ts}.mp4")
+    final_out = os.path.join(TEMP_DIR, f"final_{ts}.mp4")
+    
     out = cv2.VideoWriter(raw_out, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w + 400, h))
     
     for i in range(len(y_data)):
@@ -93,12 +101,17 @@ def render_premium_video(video_path, y_data, swing_window, fps):
         graph_img = cv2.cvtColor(np.array(fig.canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR)
         plt.close(fig)
         out.write(np.hstack((frame, cv2.resize(graph_img, (400, h)))))
-    cap.release(); out.release()
-    os.system(f'ffmpeg -y -i {raw_out} -vcodec libx264 -crf 28 {final_out}')
-    return final_out
+    
+    cap.release()
+    out.release()
+    
+    # 尝试调用 FFmpeg
+    os.system(f'ffmpeg -y -i "{raw_out}" -vcodec libx264 -crf 28 "{final_out}"')
+    
+    # 检查 FFmpeg 是否生成成功，如果不成功，回退使用 raw 视频防止报错
+    return final_out if os.path.exists(final_out) else raw_out
 
 def get_pose_frame(video_path, frame_idx):
-    # 核心修改：内部重新导入 MediaPipe
     import mediapipe as mp
     from mediapipe.python.solutions import pose as mp_pose
     from mediapipe.python.solutions import drawing_utils as mp_drawing
@@ -107,6 +120,7 @@ def get_pose_frame(video_path, frame_idx):
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
     ret, frame = cap.read(); cap.release()
     if not ret: return None
+    
     with mp_pose.Pose(static_image_mode=True, model_complexity=1) as pose:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = pose.process(rgb)
@@ -129,7 +143,11 @@ if u_file and p_file:
     if analyze_btn:
         try:
             with st.status("正在启动 AI 深度分析引擎...", expanded=True) as status:
-                u_p, p_p = os.path.join(TEMP_DIR, "u.mp4"), os.path.join(TEMP_DIR, "p.mp4")
+                # 唯一化临时视频路径
+                ts = int(time.time())
+                u_p = os.path.join(TEMP_DIR, f"u_{ts}.mp4")
+                p_p = os.path.join(TEMP_DIR, f"p_{ts}.mp4")
+                
                 with open(u_p, "wb") as f: f.write(u_file.getbuffer())
                 with open(p_p, "wb") as f: f.write(p_file.getbuffer())
 
@@ -157,22 +175,22 @@ if u_file and p_file:
                 buf_track = BytesIO(); fig_t.savefig(buf_track, format="png"); plt.close(fig_t)
                 st.markdown('</div>', unsafe_allow_html=True)
 
-                # 模块3: 对齐矩阵 (核心修改：增加占位机制)
+                # 模块3: 对齐矩阵
                 st.markdown('<div class="report-box"><h3>📸 AI 关键阶段对比 (Stage 1-6)</h3>', unsafe_allow_html=True)
                 m_imgs = []
-                blank_img = np.zeros((500, 350, 3), dtype=np.uint8) # 预设黑图防止崩溃
+                blank_img = np.zeros((500, 350, 3), dtype=np.uint8) 
                 
                 for i in range(6):
                     img_u = get_pose_frame(u_p, u_idx[i])
                     img_p = get_pose_frame(p_p, p_idx[i])
                     
-                    # 鲁棒性处理：如果没抓到图，用黑图代替，不崩溃
+                    # 鲁棒性：黑图占位，防止 np.hstack 崩溃
                     res_u = cv2.resize(img_u, (350, 500)) if img_u is not None else blank_img
                     res_p = cv2.resize(img_p, (350, 500)) if img_p is not None else blank_img
                     
                     m_imgs.append(np.hstack((res_u, res_p)))
                 
-                # 即使循环中某些帧失败，列表长度依然是 6
+                # 确保拼接逻辑安全
                 r1, r2 = np.hstack(m_imgs[:3]), np.hstack(m_imgs[3:])
                 full_m = np.vstack((r1, r2))
                 st.image(full_m, use_container_width=True)
@@ -187,6 +205,7 @@ if u_file and p_file:
 
             with st.sidebar:
                 st.markdown("---")
+                st.subheader("📥 导出分析数据")
                 st.download_button("📊 导出轨迹曲线图", buf_track.getvalue(), "track.png", use_container_width=True)
                 st.download_button("📸 导出对比快照", buf_matrix.getvalue(), "matrix.png", use_container_width=True)
                 with open(v_path, "rb") as f:

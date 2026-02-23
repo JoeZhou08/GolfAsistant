@@ -40,42 +40,61 @@ if not os.path.exists(TEMP_DIR):
 def get_action_data(video_path):
     import mediapipe as mp
     from mediapipe.python.solutions import pose as mp_pose
-    
+    import time
+
+    # 等待文件写入完成（云端稳定性增强）
+    for _ in range(5):
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            break
+        time.sleep(0.5)
+
     y_coords = []
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     
-    # 增加 model_complexity 以提升 Pro 视频识别率
-    with mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, model_complexity=1) as pose:
+    # 针对云端：使用复杂度 1 (平衡模式)，降低置信度，确保“先抓到人”
+    with mp_pose.Pose(
+        static_image_mode=False, 
+        min_detection_confidence=0.4, 
+        model_complexity=1 
+    ) as pose:
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
+            
+            # --- 核心优化：将帧缩小后再交给 AI，解决云端卡顿丢包 ---
+            h, w = frame.shape[:2]
+            if w > 640:
+                frame = cv2.resize(frame, (640, int(h * (640 / w))))
+            
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = pose.process(rgb_frame)
+            
             if results.pose_landmarks:
-                # 抓取右手腕坐标
-                y_coords.append(results.pose_landmarks.landmark[16].y)
+                # 抓右手腕，如果右手腕不见了抓左手腕，双重保险
+                lm = results.pose_landmarks.landmark
+                y = lm[16].y if lm[16].visibility > 0.3 else lm[15].y
+                y_coords.append(y)
             else:
                 y_coords.append(np.nan)
     cap.release()
 
     arr = np.array(y_coords)
+    # 如果全是空，给一个默认中线值，防止后续绘图崩溃
     if len(arr) == 0 or np.all(np.isnan(arr)):
-        return np.zeros(100), [0, 20, 40, 60, 80, 99], (0, 99), fps
+        return np.full(100, 0.5), [0, 20, 40, 60, 80, 99], (0, 99), fps
 
-    # 插值处理 NaN，防止曲线断裂
+    # 插值修复断点
     mask = np.isnan(arr)
-    if np.any(mask):
+    if np.any(mask) and not np.all(mask):
         arr[mask] = np.interp(np.flatnonzero(mask), np.flatnonzero(~mask), arr[~mask])
-
-    if len(arr) < 3:
-        arr = np.repeat(arr, 10) if len(arr) > 0 else np.zeros(10)
-
+    
+    # 动作区间检测
     dy = np.abs(np.gradient(arr))
-    moving_indices = np.where(dy > (np.max(dy) * 0.1))[0]
-    start_f, end_f = (moving_indices[0], moving_indices[-1]) if len(moving_indices) > 0 else (0, len(arr) - 1)
-    key_indices = np.linspace(start_f, end_f, 6).astype(int)
-    return arr, key_indices, (start_f, end_f), fps
+    moving = np.where(dy > (np.max(dy) * 0.1))[0]
+    start_f, end_f = (moving[0], moving[-1]) if len(moving) > 0 else (0, len(arr)-1)
+    
+    return arr, np.linspace(start_f, end_f, 6).astype(int), (start_f, end_f), fps
 
 def render_premium_video(video_path, y_data, swing_window, fps):
     cap = cv2.VideoCapture(video_path)
